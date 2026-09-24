@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+html,
+body,
+#root {
+  height: 100%;
+  background: #fafafa;
+}
+
+/* Keep the focused composer monochrome, including browser defaults. */
+textarea:focus,
+input:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+textarea,
+input {
+  caret-color: #222;
+  -webkit-tap-highlight-color: transparent;
+}
+[role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
+[role="button"]:focus-visible {
+  outline: 1px solid #777;
+  outline-offset: 3px;
+}
+::selection {
+  background: #ddd;
+  color: #111;
+}
