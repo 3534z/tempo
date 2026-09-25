@@ -131,6 +131,12 @@ export function TaskDetails({
               {timeLabel(active.time)}
               {active.note?.includes("Deadline") ? " · Deadline" : ""}
             </Text>
+            <View style={styles.addressSection}>
+              <Text style={styles.eyebrow}>ADDRESS</Text>
+              <Text style={styles.addressText}>
+                {active.address || active.location || "None"}
+              </Text>
+            </View>
             <View style={styles.actions}>
               <Pressable
                 accessibilityRole="button"
@@ -345,6 +351,13 @@ const styles = StyleSheet.create({
   remindText: { color: "#888", fontSize: 12 },
   startTime: { fontSize: 11, color: "#999", marginTop: 12, lineHeight: 18 },
   when: { fontSize: 14, color: "#777", marginTop: 10 },
+  addressSection: { marginTop: 22 },
+  addressText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: "#666",
+    marginTop: 7,
+  },
   next: {
     marginTop: 30,
     paddingVertical: 23,
