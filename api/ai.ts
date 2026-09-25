@@ -32,6 +32,7 @@ type AiRequestBody = {
   tasks?: unknown;
   events?: unknown;
   memory?: unknown;
+  currentDate?: unknown;
   timeZone?: unknown;
 };
 type PlannedAction = {
@@ -40,6 +41,8 @@ type PlannedAction = {
   title: string | null;
   date: string | null;
   time: string | null;
+  location: string | null;
+  address: string | null;
   reminderMinutes: number | null;
   reason: string | null;
   strategy: string | null;
@@ -64,6 +67,8 @@ const responseSchema = {
           title: { type: ["string", "null"] },
           date: { type: ["string", "null"] },
           time: { type: ["string", "null"] },
+          location: { type: ["string", "null"] },
+          address: { type: ["string", "null"] },
           reminderMinutes: { type: ["integer", "null"] },
           reason: { type: ["string", "null"] },
           strategy: { type: ["string", "null"] },
@@ -74,6 +79,8 @@ const responseSchema = {
           "title",
           "date",
           "time",
+          "location",
+          "address",
           "reminderMinutes",
           "reason",
           "strategy",
@@ -293,8 +300,14 @@ export default async function handler(
     const timeZone =
       typeof body.timeZone === "string" && body.timeZone.length <= 100
         ? body.timeZone
-        : "UTC";
+        : "Asia/Seoul";
+    const currentDate =
+      typeof body.currentDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(body.currentDate)
+        ? body.currentDate
+        : undefined;
     const context = {
+      currentLocalDate: currentDate,
       currentLocalTime: localNow(timeZone),
       timeZone,
       tasks: body.tasks ?? [],
@@ -312,8 +325,12 @@ export default async function handler(
           "You are Tempo, a concise personal planning assistant.",
           "Turn the user's request into zero or more supported actions.",
           "Use absolute YYYY-MM-DD dates and 24-hour HH:MM times.",
+          "Interpret today, tomorrow, and weekdays from currentLocalDate in the supplied timezone; currentLocalDate is authoritative when present.",
           "Treat appointments as events and actionable personal work as tasks.",
           "Use existing IDs for update or delete actions when a matching item exists.",
+          "Extract a naturally written venue, landmark, neighborhood, or street address into location. Preserve the user's wording. Use address for a full postal-style street address when useful.",
+          "For requests that move or change a location, return an update action for the existing item with its ID and the new location. Do not create a duplicate.",
+          "For create_reminder, use id or title to identify the existing item and put the lead time in reminderMinutes; date and time identify the item and must not represent a new task time.",
           "Use save_behavior_pattern when the user explains why something was missed; include the subject as title, their reason, and a practical future strategy.",
           "Use null for fields that do not apply. Keep reply brief and do not claim an action was saved yet.",
         ].join(" "),

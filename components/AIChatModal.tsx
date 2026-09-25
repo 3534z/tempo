@@ -14,8 +14,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useCalendar, useChat, useMemory, useTasks } from "../stores";
 import { Message, uid } from "../lib/types";
-import { createActionsToTasks, requestAiPlan } from "../lib/ai";
-import { scheduleReminder } from "../lib/notifications";
+import { executeAiActions, requestAiPlan } from "../lib/ai";
+import { cancelReminder, scheduleReminder } from "../lib/notifications";
 import { VoiceInput } from "./VoiceInput";
 import { tap } from "../lib/haptics";
 import { ChatMessage } from "./ChatMessage";
@@ -36,6 +36,7 @@ export function AIChatModal({
   const [listening, setListening] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceHint, setVoiceHint] = useState("");
+  const [requestError, setRequestError] = useState("");
   const scroll = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   const lock = useRef(false);
@@ -45,11 +46,14 @@ export function AIChatModal({
   const status = useChat((s) => s.status);
   const remember = useMemory((s) => s.remember);
   const addTasks = useTasks((s) => s.add);
+  const updateTask = useTasks((s) => s.update);
+  const removeTask = useTasks((s) => s.remove);
   const select = useCalendar((s) => s.select);
   useEffect(() => {
     if (visible) {
       setInput(initialText);
       setVoiceHint("");
+      setRequestError("");
     } else {
       setListening(false);
       setVoiceBusy(false);
@@ -71,6 +75,7 @@ export function AIChatModal({
     setListening(false);
     setInput("");
     setVoiceHint("");
+    setRequestError("");
     addMessage({ id: uid(), role: "user", text });
     if (/^(yes|confirm|looks good|okay|ok)[.!]?$/i.test(text)) {
       const pending = [...useChat.getState().messages]
@@ -88,28 +93,19 @@ export function AIChatModal({
         useTasks.getState().tasks,
         useMemory.getState().memories,
       );
-      const plannedTasks = createActionsToTasks(result.actions);
-      result.actions
-        .filter((action) => action.type === "save_behavior_pattern")
-        .forEach((action) => {
-          if (!action.title || !action.reason || !action.strategy) return;
-          remember({
-            id: uid(),
-            subject: action.title,
-            reason: action.reason,
-            strategy: action.strategy,
-            createdAt: new Date().toISOString(),
-          });
-        });
-      if (plannedTasks.length) {
-        useChat
-          .getState()
-          .messages.filter((message) => message.status === "pending")
-          .forEach((message) => status(message.id, "dismissed"));
-      }
-      reply(result.reply, plannedTasks.length ? plannedTasks : undefined);
+      const created = await executeAiActions(result.actions, {
+        getTasks: () => useTasks.getState().tasks,
+        addTasks,
+        updateTask,
+        removeTask,
+        remember,
+        schedule: scheduleReminder,
+        cancel: cancelReminder,
+      });
+      if (created[0]) select(created[0].date);
+      reply(result.reply);
     } catch (error) {
-      reply(
+      setRequestError(
         error instanceof Error
           ? error.message
           : "Tempo could not create a plan. Please try again.",
@@ -212,6 +208,14 @@ export function AIChatModal({
             >
               {voiceHint ? (
                 <Text style={styles.hint}>{voiceHint}</Text>
+              ) : requestError ? (
+                <Text accessibilityLiveRegion="polite" style={styles.errorHint}>
+                  {requestError}
+                </Text>
+              ) : busy ? (
+                <Text accessibilityLiveRegion="polite" style={styles.hint}>
+                  Tempo is thinking…
+                </Text>
               ) : listening ? (
                 <Text style={styles.hint}>
                   Listening · Tap the arrow when finished
@@ -339,6 +343,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 17,
     color: "#888",
+    paddingBottom: 10,
+    paddingHorizontal: 8,
+  },
+  errorHint: {
+    fontSize: 11,
+    lineHeight: 17,
+    color: "#555",
     paddingBottom: 10,
     paddingHorizontal: 8,
   },

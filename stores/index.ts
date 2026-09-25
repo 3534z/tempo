@@ -8,6 +8,7 @@ export const useTasks = create(
   persist<{
     tasks: Task[];
     add: (tasks: Task[]) => void;
+    remove: (id: string) => void;
     start: (id: string) => void;
     update: (id: string, patch: Partial<Task>) => void;
   }>(
@@ -28,6 +29,8 @@ export const useTasks = create(
             ...tasks.filter((t) => !s.tasks.some((x) => x.id === t.id)),
           ],
         })),
+      remove: (id) =>
+        set((s) => ({ tasks: s.tasks.filter((task) => task.id !== id) })),
       update: (id, patch) =>
         set((s) => ({
           tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)),

@@ -7,6 +7,8 @@ export type Task = {
   completed: boolean;
   startedAt?: string;
   completedSteps?: string[];
+  address?: string;
+  location?: string;
   note?: string;
   reminderMinutes: number;
   notificationId?: string;

@@ -9,6 +9,7 @@ export function TaskItem({
   task: Task;
   onPress: () => void;
 }) {
+  const place = task.address || task.location;
   return (
     <Animated.View
       entering={FadeIn.duration(240)}
@@ -17,7 +18,7 @@ export function TaskItem({
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`${task.title}, ${timeLabel(task.time)}, ${task.completed ? "completed" : "incomplete"}`}
+        accessibilityLabel={`${task.title}, ${timeLabel(task.time)}${place ? `, ${place}` : ""}, ${task.completed ? "completed" : "incomplete"}`}
         style={({ pressed }) => [styles.row, { opacity: pressed ? 0.5 : 1 }]}
       >
         <View style={{ flex: 1, gap: 7 }}>
@@ -28,6 +29,11 @@ export function TaskItem({
             {task.type}
             {task.note?.includes("Deadline") ? " · Deadline" : ""}
           </Text>
+          {!!place && (
+            <Text numberOfLines={1} style={styles.location}>
+              {place}
+            </Text>
+          )}
         </View>
         <Text style={[styles.time, task.completed && { color: "#b2b2b2" }]}>
           {timeLabel(task.time)}
@@ -48,5 +54,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 16, fontWeight: "500", letterSpacing: -0.25 },
   completed: { color: "#aaa", textDecorationLine: "line-through" },
   type: { fontSize: 11, color: "#939393", letterSpacing: 0.2 },
+  location: { fontSize: 10, lineHeight: 14, color: "#a1a1a1" },
   time: { fontSize: 12, color: "#666", fontVariant: ["tabular-nums"] },
 });
