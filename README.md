@@ -9,6 +9,33 @@ npm install
 npm start
 ```
 
+## Vercel web deployment
+
+The project exports an Expo Router single-page app to `dist` and keeps the
+Vercel Function at `/api/ai` outside the client bundle. Vercel reads all build
+settings from `vercel.json`:
+
+```sh
+npm install
+npm run build:web
+```
+
+Connect this repository to Vercel and keep `OPENAI_API_KEY` in the project's
+Environment Variables. Do not prefix it with `EXPO_PUBLIC_`; that prefix would
+expose the value to browser code. An optional server-only `OPENAI_MODEL`
+variable can override the endpoint's default model.
+
+After deployment, `/` serves the web app and `/api/ai` returns a small status
+response for GET requests. Send a POST request with either `prompt` or
+`messages` to call the secure AI endpoint:
+
+```json
+{ "prompt": "Plan a focused afternoon" }
+```
+
+All non-file browser routes fall back to the Expo app, while Vercel's
+filesystem routing preserves `/api/ai` as a serverless function.
+
 Open in a compatible Expo Go client for the calendar, typed assistant, persistent tasks and local notifications. For the full on-device voice flow, build the native app (Xcode / Android Studio required):
 
 ```sh
