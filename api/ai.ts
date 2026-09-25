@@ -11,6 +11,22 @@ const ACTION_TYPES = [
 ] as const;
 
 type ContextItem = Record<string, unknown>;
+type NodeRequest = {
+  method?: string;
+  url?: string;
+  headers: Record<string, string | string[] | undefined>;
+  body?: unknown;
+  on: (
+    event: "data" | "end" | "error",
+    listener: ((chunk: Uint8Array | string) => void) | (() => void) | ((error: Error) => void),
+  ) => void;
+};
+type NodeResponse = {
+  statusCode: number;
+  writableEnded?: boolean;
+  setHeader: (name: string, value: string) => void;
+  end: (body?: string) => void;
+};
 type AiRequestBody = {
   message?: unknown;
   tasks?: unknown;
@@ -68,12 +84,17 @@ const responseSchema = {
   required: ["reply", "actions"],
 } as const;
 
-function allowedOrigin(request: Request) {
-  const origin = request.headers.get("origin");
+function header(request: NodeRequest, name: string) {
+  const value = request.headers[name.toLowerCase()];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function allowedOrigin(request: NodeRequest) {
+  const origin = header(request, "origin");
   if (!origin) return "*";
   try {
     const originUrl = new URL(origin);
-    const requestHost = request.headers.get("host") ?? new URL(request.url).host;
+    const requestHost = header(request, "host");
     const configuredOrigin = process.env.APP_ORIGIN;
     if (
       originUrl.host === requestHost ||
@@ -87,16 +108,67 @@ function allowedOrigin(request: Request) {
   return null;
 }
 
-function json(body: unknown, status: number, origin: string) {
-  return Response.json(body, {
-    status,
-    headers: {
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Origin": origin,
-      "Cache-Control": "no-store",
-      Vary: "Origin",
-    },
+function setCors(response: NodeResponse, origin: string) {
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.setHeader("Access-Control-Allow-Origin", origin);
+  response.setHeader("Vary", "Origin");
+}
+
+function json(
+  response: NodeResponse,
+  body: unknown,
+  status: number,
+  origin: string,
+) {
+  response.statusCode = status;
+  setCors(response, origin);
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(body));
+}
+
+async function readJsonBody(request: NodeRequest): Promise<AiRequestBody> {
+  if (request.body !== undefined) {
+    if (typeof request.body === "string") {
+      return JSON.parse(request.body) as AiRequestBody;
+    }
+    if (request.body instanceof Uint8Array) {
+      return JSON.parse(new TextDecoder().decode(request.body)) as AiRequestBody;
+    }
+    if (request.body && typeof request.body === "object") {
+      return request.body as AiRequestBody;
+    }
+    throw new Error("Invalid JSON body");
+  }
+
+  return await new Promise<AiRequestBody>((resolve, reject) => {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    request.on("data", (chunk: Uint8Array | string) => {
+      const bytes =
+        typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
+      size += bytes.byteLength;
+      if (size > 128_000) {
+        reject(new Error("Request body is too large"));
+        return;
+      }
+      chunks.push(bytes);
+    });
+    request.on("end", () => {
+      try {
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        resolve(JSON.parse(new TextDecoder().decode(bytes)) as AiRequestBody);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on("error", (error: Error) => reject(error));
   });
 }
 
@@ -130,138 +202,189 @@ function localNow(timeZone: string) {
   }
 }
 
-export default async function handler(request: Request) {
-  const origin = allowedOrigin(request);
-  if (!origin) return json({ error: "Origin is not allowed" }, 403, "null");
-
-  if (request.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Origin": origin,
-        Vary: "Origin",
-      },
-    });
-  }
-  if (request.method === "GET") return json({ ok: true }, 200, origin);
-  if (request.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405, origin);
-  }
-
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    return json({ error: "Content-Type must be application/json" }, 415, origin);
-  }
-  const contentLength = Number(request.headers.get("content-length") ?? 0);
-  if (contentLength > 128_000) {
-    return json({ error: "Request body is too large" }, 413, origin);
-  }
-
-  let body: AiRequestBody;
+export default async function handler(
+  request: NodeRequest,
+  res: NodeResponse,
+) {
+  let origin = "*";
   try {
-    body = (await request.json()) as AiRequestBody;
-  } catch {
-    return json({ error: "Expected a JSON request body" }, 400, origin);
-  }
-  const message = typeof body.message === "string" ? body.message.trim() : "";
-  if (!message || message.length > 4_000) {
-    return json(
-      { error: "message must contain between 1 and 4000 characters" },
-      400,
-      origin,
-    );
-  }
-  if (
-    !isContextArray(body.tasks) ||
-    !isContextArray(body.events) ||
-    !isContextArray(body.memory)
-  ) {
-    return json(
-      { error: "tasks, events and memory must be arrays of up to 100 objects" },
-      400,
-      origin,
-    );
-  }
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return json({ error: "AI service is not configured" }, 503, origin);
-  }
-  const timeZone =
-    typeof body.timeZone === "string" && body.timeZone.length <= 100
-      ? body.timeZone
-      : "UTC";
-  const context = {
-    currentLocalTime: localNow(timeZone),
-    timeZone,
-    tasks: body.tasks ?? [],
-    events: body.events ?? [],
-    memory: body.memory ?? [],
-  };
-
-  try {
-    const openai = new OpenAI({ apiKey });
-    const response = await openai.responses.create({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      store: false,
-      max_output_tokens: 900,
-      instructions: [
-        "You are Tempo, a concise personal planning assistant.",
-        "Turn the user's request into zero or more supported actions.",
-        "Use absolute YYYY-MM-DD dates and 24-hour HH:MM times.",
-        "Treat appointments as events and actionable personal work as tasks.",
-        "Use existing IDs for update or delete actions when a matching item exists.",
-        "Use save_behavior_pattern when the user explains why something was missed; include the subject as title, their reason, and a practical future strategy.",
-        "Use null for fields that do not apply. Keep reply brief and do not claim an action was saved yet.",
-      ].join(" "),
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: `Planning context:\n${JSON.stringify(context)}\n\nUser message:\n${message}`,
-            },
-          ],
-        },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "tempo_plan",
-          strict: true,
-          schema: responseSchema,
-        },
-      },
-    });
-    if (!response.output_text) {
-      return json({ error: "AI returned no plan" }, 502, origin);
+    const acceptedOrigin = allowedOrigin(request);
+    if (!acceptedOrigin) {
+      json(res, { error: "Origin is not allowed" }, 403, "null");
+      return;
     }
-    const result = JSON.parse(response.output_text) as {
-      reply: string;
-      actions: PlannedAction[];
+    origin = acceptedOrigin;
+
+    const method = request.method?.toUpperCase();
+    if (method === "OPTIONS") {
+      res.statusCode = 204;
+      setCors(res, origin);
+      res.end();
+      return;
+    }
+    if (method === "GET") {
+      json(res, { ok: true }, 200, origin);
+      return;
+    }
+    if (method !== "POST") {
+      json(res, { error: "Method not allowed" }, 405, origin);
+      return;
+    }
+
+    const contentType = header(request, "content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      json(
+        res,
+        { error: "Content-Type must be application/json" },
+        415,
+        origin,
+      );
+      return;
+    }
+    const contentLength = Number(header(request, "content-length") ?? 0);
+    if (!Number.isFinite(contentLength) || contentLength > 128_000) {
+      json(res, { error: "Request body is too large" }, 413, origin);
+      return;
+    }
+
+    let body: AiRequestBody;
+    try {
+      body = await readJsonBody(request);
+    } catch (error) {
+      const tooLarge =
+        error instanceof Error && error.message === "Request body is too large";
+      json(
+        res,
+        { error: tooLarge ? error.message : "Expected a JSON request body" },
+        tooLarge ? 413 : 400,
+        origin,
+      );
+      return;
+    }
+    const message = typeof body.message === "string" ? body.message.trim() : "";
+    if (!message || message.length > 4_000) {
+      json(
+        res,
+        { error: "message must contain between 1 and 4000 characters" },
+        400,
+        origin,
+      );
+      return;
+    }
+    if (
+      !isContextArray(body.tasks) ||
+      !isContextArray(body.events) ||
+      !isContextArray(body.memory)
+    ) {
+      json(
+        res,
+        { error: "tasks, events and memory must be arrays of up to 100 objects" },
+        400,
+        origin,
+      );
+      return;
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      json(res, { error: "AI service is not configured" }, 503, origin);
+      return;
+    }
+    const timeZone =
+      typeof body.timeZone === "string" && body.timeZone.length <= 100
+        ? body.timeZone
+        : "UTC";
+    const context = {
+      currentLocalTime: localNow(timeZone),
+      timeZone,
+      tasks: body.tasks ?? [],
+      events: body.events ?? [],
+      memory: body.memory ?? [],
     };
-    return json(
-      {
-        reply: result.reply,
-        actions: result.actions.map(cleanAction),
-      },
-      200,
-      origin,
-    );
-  } catch (error) {
-    if (error instanceof OpenAI.APIError) {
-      console.error("OpenAI request failed", {
-        status: error.status,
-        requestId: error.requestID,
+
+    try {
+      const openai = new OpenAI({ apiKey });
+      const aiResponse = await openai.responses.create({
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        store: false,
+        max_output_tokens: 900,
+        instructions: [
+          "You are Tempo, a concise personal planning assistant.",
+          "Turn the user's request into zero or more supported actions.",
+          "Use absolute YYYY-MM-DD dates and 24-hour HH:MM times.",
+          "Treat appointments as events and actionable personal work as tasks.",
+          "Use existing IDs for update or delete actions when a matching item exists.",
+          "Use save_behavior_pattern when the user explains why something was missed; include the subject as title, their reason, and a practical future strategy.",
+          "Use null for fields that do not apply. Keep reply brief and do not claim an action was saved yet.",
+        ].join(" "),
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `Planning context:\n${JSON.stringify(context)}\n\nUser message:\n${message}`,
+              },
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "tempo_plan",
+            strict: true,
+            schema: responseSchema,
+          },
+        },
       });
-    } else {
-      console.error("AI endpoint failed", {
-        name: error instanceof Error ? error.name : "UnknownError",
-      });
+      if (!aiResponse.output_text) {
+        json(res, { error: "AI returned no plan" }, 502, origin);
+        return;
+      }
+      const result = JSON.parse(aiResponse.output_text) as {
+        reply: string;
+        actions: PlannedAction[];
+      };
+      json(
+        res,
+        {
+          reply: result.reply,
+          actions: result.actions.map(cleanAction),
+        },
+        200,
+        origin,
+      );
+      return;
+    } catch (error) {
+      if (error instanceof OpenAI.APIError) {
+        console.error("OpenAI request failed", {
+          status: error.status,
+          requestId: error.requestID,
+        });
+      } else {
+        console.error("AI endpoint failed", {
+          name: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+      json(
+        res,
+        { error: "AI service is temporarily unavailable" },
+        502,
+        origin,
+      );
+      return;
     }
-    return json({ error: "AI service is temporarily unavailable" }, 502, origin);
+  } catch (error) {
+    console.error("Unhandled AI endpoint error", {
+      name: error instanceof Error ? error.name : "UnknownError",
+    });
+    if (!res.writableEnded) {
+      json(
+        res,
+        { error: "Internal server error" },
+        500,
+        origin,
+      );
+    }
   }
 }
