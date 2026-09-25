@@ -4,6 +4,7 @@ import {
   View,
   Text,
   Pressable,
+  Image,
   StyleSheet,
   ScrollView,
   Platform,
@@ -158,15 +159,17 @@ export function TaskDetails({
               {!active.startedAt && !active.completed && (
                 <Pressable
                   accessibilityRole="button"
+                  accessibilityLabel="Set reminder 5 minutes before"
                   disabled={saving}
                   onPress={remind}
                   style={styles.remindButton}
                 >
-                  <Text style={styles.remindText}>
-                    {active.notificationId && active.reminderMinutes === 5
-                      ? "Reminder set · 5 min"
-                      : "Remind me 5 min before"}
-                  </Text>
+                  <Image
+                    source={require("../assets/reminder-bell.png")}
+                    resizeMode="contain"
+                    style={styles.remindIcon}
+                  />
+                  <Text style={styles.remindText}>5 min before</Text>
                 </Pressable>
               )}
             </View>
@@ -332,10 +335,13 @@ const styles = StyleSheet.create({
   startedButton: { backgroundColor: "#f3f3f3" },
   startText: { color: "#fff", fontSize: 14, fontWeight: "600" },
   remindButton: {
-    minHeight: 44,
+    minHeight: 58,
     justifyContent: "center",
+    alignItems: "center",
+    gap: 4,
     paddingHorizontal: 4,
   },
+  remindIcon: { width: 23, height: 23, opacity: 0.78 },
   remindText: { color: "#888", fontSize: 12 },
   startTime: { fontSize: 11, color: "#999", marginTop: 12, lineHeight: 18 },
   when: { fontSize: 14, color: "#777", marginTop: 10 },
