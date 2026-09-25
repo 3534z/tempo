@@ -12,10 +12,9 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import * as Speech from "expo-speech";
 import { useCalendar, useChat, useMemory, useTasks } from "../stores";
-import { captureMemory, planLocally } from "../lib/planner";
-import { Message, VoiceMessage, uid } from "../lib/types";
+import { Message, uid } from "../lib/types";
+import { createActionsToTasks, requestAiPlan } from "../lib/ai";
 import { scheduleReminder } from "../lib/notifications";
 import { VoiceInput } from "./VoiceInput";
 import { tap } from "../lib/haptics";
@@ -37,7 +36,6 @@ export function AIChatModal({
   const [listening, setListening] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceHint, setVoiceHint] = useState("");
-  const voice = useRef(false);
   const scroll = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   const lock = useRef(false);
@@ -47,7 +45,6 @@ export function AIChatModal({
   const status = useChat((s) => s.status);
   const remember = useMemory((s) => s.remember);
   const addTasks = useTasks((s) => s.add);
-  const selected = useCalendar((s) => s.selected);
   const select = useCalendar((s) => s.select);
   useEffect(() => {
     if (visible) {
@@ -56,11 +53,7 @@ export function AIChatModal({
     } else {
       setListening(false);
       setVoiceBusy(false);
-      void Speech.stop();
     }
-    return () => {
-      void Speech.stop();
-    };
   }, [visible, initialText]);
   const reply = (text: string, plan?: Message["plan"]) => {
     addMessage({
@@ -70,33 +63,15 @@ export function AIChatModal({
       plan,
       status: plan ? "pending" : undefined,
     });
-    if (voice.current) {
-      Speech.speak(text, { rate: 0.95 });
-      voice.current = false;
-    }
   };
-  const send = (spokenText?: string, audio?: VoiceMessage) => {
-    const text = (spokenText ?? input).trim();
-    if ((!text && !audio) || busy || (voiceBusy && !audio)) return;
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy || voiceBusy) return;
     tap();
     setListening(false);
-    if (!audio) setInput("");
+    setInput("");
     setVoiceHint("");
-    addMessage({ id: uid(), role: "user", text, audio });
-    if (audio && !text) {
-      reply(
-        "Voice message saved. I couldn’t transcribe it on this device. Type your plan and I’ll help schedule it.",
-      );
-      return;
-    }
-    const memory = captureMemory(text);
-    if (memory) {
-      remember(memory);
-      reply(
-        `I’ll remember that. ${memory.strategy} Next time you plan it, I’ll use this to suggest a better moment.`,
-      );
-      return;
-    }
+    addMessage({ id: uid(), role: "user", text });
     if (/^(yes|confirm|looks good|okay|ok)[.!]?$/i.test(text)) {
       const pending = [...useChat.getState().messages]
         .reverse()
@@ -106,14 +81,42 @@ export function AIChatModal({
         return;
       }
     }
-    const result = planLocally(text, useMemory.getState().memories, selected);
-    if (result.tasks.length) {
-      useChat
-        .getState()
-        .messages.filter((m) => m.status === "pending")
-        .forEach((m) => status(m.id, "dismissed"));
+    setBusy(true);
+    try {
+      const result = await requestAiPlan(
+        text,
+        useTasks.getState().tasks,
+        useMemory.getState().memories,
+      );
+      const plannedTasks = createActionsToTasks(result.actions);
+      result.actions
+        .filter((action) => action.type === "save_behavior_pattern")
+        .forEach((action) => {
+          if (!action.title || !action.reason || !action.strategy) return;
+          remember({
+            id: uid(),
+            subject: action.title,
+            reason: action.reason,
+            strategy: action.strategy,
+            createdAt: new Date().toISOString(),
+          });
+        });
+      if (plannedTasks.length) {
+        useChat
+          .getState()
+          .messages.filter((message) => message.status === "pending")
+          .forEach((message) => status(message.id, "dismissed"));
+      }
+      reply(result.reply, plannedTasks.length ? plannedTasks : undefined);
+    } catch (error) {
+      reply(
+        error instanceof Error
+          ? error.message
+          : "Tempo could not create a plan. Please try again.",
+      );
+    } finally {
+      setBusy(false);
     }
-    reply(result.text, result.tasks.length ? result.tasks : undefined);
   };
   const confirm = async (message: Message) => {
     if (
@@ -211,7 +214,7 @@ export function AIChatModal({
                 <Text style={styles.hint}>{voiceHint}</Text>
               ) : listening ? (
                 <Text style={styles.hint}>
-                  Recording · Tap the arrow to send
+                  Listening · Tap the arrow when finished
                 </Text>
               ) : null}
               <View style={styles.composer}>
@@ -237,9 +240,9 @@ export function AIChatModal({
                   disabled={busy}
                   onRecording={setListening}
                   onError={setVoiceHint}
-                  onSend={(audio, text) => {
-                    voice.current = !!text;
-                    send(text, audio);
+                  onTranscript={(text) => {
+                    setInput(text);
+                    inputRef.current?.focus();
                   }}
                 />
                 {!!input.trim() && !listening && (
@@ -247,7 +250,7 @@ export function AIChatModal({
                     disabled={busy || voiceBusy}
                     accessibilityRole="button"
                     accessibilityLabel="Send plan"
-                    onPress={() => send()}
+                    onPress={() => void send()}
                     style={styles.send}
                   >
                     <GradientFill radius={17} />
@@ -256,7 +259,7 @@ export function AIChatModal({
                 )}
               </View>
               <Text style={styles.privacy}>
-                A thoughtful plan. Kept on your device.
+                Your voice is converted to text before planning.
               </Text>
             </View>
           </View>
